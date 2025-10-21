@@ -1,5 +1,7 @@
 #include "Commands/UnrealMCPEditorCommands.h"
 #include "Commands/UnrealMCPCommonUtils.h"
+#include "UnrealMCPModule.h"
+#include "MCPLogCaptureDevice.h"
 #include "Editor.h"
 #include "EditorViewportClient.h"
 #include "LevelEditorViewport.h"
@@ -74,26 +76,50 @@ TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleCommand(const FString& C
     {
         return HandleTakeScreenshot(Params);
     }
+    // Console/Log commands
+    else if (CommandType == TEXT("get_console_output"))
+    {
+        return HandleGetConsoleOutput(Params);
+    }
     
     return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Unknown editor command: %s"), *CommandType));
 }
 
 TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleGetActorsInLevel(const TSharedPtr<FJsonObject>& Params)
 {
+    // Get optional max_actors parameter (default to 100 for safety)
+    int32 MaxActors = 100;
+    if (Params->HasField(TEXT("max_actors")))
+    {
+        MaxActors = Params->GetIntegerField(TEXT("max_actors"));
+    }
+    
     TArray<AActor*> AllActors;
     UGameplayStatics::GetAllActorsOfClass(GWorld, AActor::StaticClass(), AllActors);
     
     TArray<TSharedPtr<FJsonValue>> ActorArray;
+    int32 ActorCount = 0;
+    
     for (AActor* Actor : AllActors)
     {
         if (Actor)
         {
             ActorArray.Add(FUnrealMCPCommonUtils::ActorToJson(Actor));
+            ActorCount++;
+            
+            // Stop if we've reached the maximum (0 means unlimited)
+            if (MaxActors > 0 && ActorCount >= MaxActors)
+            {
+                break;
+            }
         }
     }
     
     TSharedPtr<FJsonObject> ResultObj = MakeShared<FJsonObject>();
     ResultObj->SetArrayField(TEXT("actors"), ActorArray);
+    ResultObj->SetNumberField(TEXT("total_actors"), AllActors.Num());
+    ResultObj->SetNumberField(TEXT("returned_actors"), ActorCount);
+    ResultObj->SetBoolField(TEXT("truncated"), MaxActors > 0 && AllActors.Num() > MaxActors);
     
     return ResultObj;
 }
@@ -597,4 +623,66 @@ TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleTakeScreenshot(const TSh
     }
     
     return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Failed to take screenshot"));
-} 
+}
+
+
+TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleGetConsoleOutput(const TSharedPtr<FJsonObject>& Params)
+{
+    // Get optional max_lines parameter (default to 500)
+    int32 MaxLines = 500;
+    if (Params->HasField(TEXT("max_lines")))
+    {
+        MaxLines = Params->GetIntegerField(TEXT("max_lines"));
+    }
+    
+    // Get optional severity filter (Display, Warning, Error, All)
+    FString SeverityFilter = TEXT("All");
+    if (Params->HasField(TEXT("severity")))
+    {
+        SeverityFilter = Params->GetStringField(TEXT("severity"));
+    }
+    
+    // Get optional category filter (LogTemp, LogBlueprint, etc.)
+    FString CategoryFilter = TEXT("");
+    if (Params->HasField(TEXT("category")))
+    {
+        CategoryFilter = Params->GetStringField(TEXT("category"));
+    }
+    
+    TArray<TSharedPtr<FJsonValue>> LogArray;
+    
+    // Get the log capture device from the module
+    if (FUnrealMCPModule::IsAvailable())
+    {
+        FMCPLogCaptureDevice* LogCaptureDevice = FUnrealMCPModule::Get().GetLogCaptureDevice();
+        
+        if (LogCaptureDevice)
+        {
+            TArray<FMCPLogEntry> Entries;
+            LogCaptureDevice->GetLogEntries(Entries, MaxLines, SeverityFilter, CategoryFilter);
+            
+            // Convert to JSON
+            for (const FMCPLogEntry& Entry : Entries)
+            {
+                TSharedPtr<FJsonObject> LogEntry = MakeShared<FJsonObject>();
+                LogEntry->SetStringField(TEXT("timestamp"), Entry.Timestamp);
+                LogEntry->SetStringField(TEXT("category"), Entry.Category);
+                LogEntry->SetStringField(TEXT("severity"), Entry.Severity);
+                LogEntry->SetStringField(TEXT("message"), Entry.Message);
+                
+                LogArray.Add(MakeShared<FJsonValueObject>(LogEntry));
+            }
+        }
+    }
+
+    TSharedPtr<FJsonObject> ResultObj = MakeShared<FJsonObject>();
+    ResultObj->SetArrayField(TEXT("logs"), LogArray);
+    ResultObj->SetNumberField(TEXT("count"), LogArray.Num());
+    ResultObj->SetNumberField(TEXT("max_lines"), MaxLines);
+    ResultObj->SetStringField(TEXT("severity_filter"), SeverityFilter);
+    ResultObj->SetStringField(TEXT("category_filter"), CategoryFilter.IsEmpty() ? TEXT("All") : CategoryFilter);
+    
+    return ResultObj;
+
+}
+

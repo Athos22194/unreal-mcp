@@ -15,8 +15,15 @@ def register_editor_tools(mcp: FastMCP):
     """Register editor tools with the MCP server."""
     
     @mcp.tool()
-    def get_actors_in_level(ctx: Context) -> List[Dict[str, Any]]:
-        """Get a list of all actors in the current level."""
+    def get_actors_in_level(ctx: Context, max_actors: int = 100) -> List[Dict[str, Any]]:
+        """Get a list of actors in the current level.
+        
+        Args:
+            max_actors: Maximum number of actors to return (default: 100). Set to 0 for all actors (use with caution in large levels).
+        
+        Returns:
+            List of actor dictionaries with their properties.
+        """
         from unreal_mcp_server import get_unreal_connection
         
         try:
@@ -25,7 +32,10 @@ def register_editor_tools(mcp: FastMCP):
                 logger.warning("Failed to connect to Unreal Engine")
                 return []
                 
-            response = unreal.send_command("get_actors_in_level", {})
+            # Send max_actors parameter to the engine
+            response = unreal.send_command("get_actors_in_level", {
+                "max_actors": max_actors
+            })
             
             if not response:
                 logger.warning("No response from Unreal Engine")
@@ -37,11 +47,11 @@ def register_editor_tools(mcp: FastMCP):
             # Check response format
             if "result" in response and "actors" in response["result"]:
                 actors = response["result"]["actors"]
-                logger.info(f"Found {len(actors)} actors in level")
+                logger.info(f"Found {len(actors)} actors in level (max requested: {max_actors})")
                 return actors
             elif "actors" in response:
                 actors = response["actors"]
-                logger.info(f"Found {len(actors)} actors in level")
+                logger.info(f"Found {len(actors)} actors in level (max requested: {max_actors})")
                 return actors
                 
             logger.warning(f"Unexpected response format: {response}")
@@ -52,8 +62,41 @@ def register_editor_tools(mcp: FastMCP):
             return []
 
     @mcp.tool()
-    def find_actors_by_name(ctx: Context, pattern: str) -> List[str]:
-        """Find actors by name pattern."""
+    def find_actors_by_name(ctx: Context, pattern: str) -> List[Dict[str, Any]]:
+        """Find actors in the level by name pattern (case-sensitive substring match).
+        
+        Searches through all actors in the current level and returns those whose names
+        contain the specified pattern. This is useful for quickly locating specific
+        actors or groups of actors with similar naming conventions.
+        
+        Args:
+            pattern: The text pattern to search for in actor names. This performs a
+                    case-sensitive substring match. Examples:
+                    - "Light" finds "DirectionalLight", "PointLight_1", "SpotLight"
+                    - "BP_" finds all Blueprint actors like "BP_Player", "BP_Enemy_2"
+                    - "Player" finds "PlayerStart", "BP_PlayerCharacter", etc.
+        
+        Returns:
+            List of actor dictionaries, each containing:
+            - name: The actor's unique name in the level
+            - class: The actor's class type (e.g., "StaticMeshActor", "PointLight")
+            - location: World position as [X, Y, Z] in centimeters
+            - rotation: Rotation as [Pitch, Yaw, Roll] in degrees
+            - scale: Scale as [X, Y, Z] multiplier
+            
+            Returns empty list if no actors match the pattern.
+        
+        Examples:
+            >>> find_actors_by_name(pattern="Light")
+            [{"name": "PointLight_1", "class": "PointLight", ...},
+             {"name": "DirectionalLight_Sun", "class": "DirectionalLight", ...}]
+            
+            >>> find_actors_by_name(pattern="BP_Enemy")
+            [{"name": "BP_Enemy_0", "class": "BP_Enemy_C", ...}]
+            
+            >>> find_actors_by_name(pattern="NonExistent")
+            []
+        """
         from unreal_mcp_server import get_unreal_connection
         
         try:
@@ -69,7 +112,9 @@ def register_editor_tools(mcp: FastMCP):
             if not response:
                 return []
                 
-            return response.get("actors", [])
+            actors = response.get("actors", [])
+            logger.info(f"Found {len(actors)} actors matching pattern '{pattern}'")
+            return actors
             
         except Exception as e:
             logger.error(f"Error finding actors: {e}")
@@ -366,4 +411,118 @@ def register_editor_tools(mcp: FastMCP):
             logger.error(error_msg)
             return {"success": False, "message": error_msg}
 
+    @mcp.tool()
+    def get_console_output(
+        ctx: Context, 
+        max_lines: int = 500,
+        severity: str = "All",
+        category: str = ""
+    ) -> Dict[str, Any]:
+        """Get recent console output from the Unreal Editor.
+        
+        Retrieves log messages from the Unreal Editor's output log with optional filtering.
+        Useful for debugging, monitoring operations, and checking for errors or warnings.
+        
+        Args:
+            max_lines: Maximum number of log lines to return (default: 500).
+                      Higher values return more history but may impact performance.
+                      Examples: 100, 500, 1000
+                      
+            severity: Filter by severity level (default: "All").
+                     Options: "All", "Display", "Warning", "Error"
+                     Examples:
+                     - "All": Returns all log messages
+                     - "Error": Returns only error messages
+                     - "Warning": Returns warnings and errors
+                     
+            category: Filter by log category (default: "" for all categories).
+                     Common categories: "LogTemp", "LogBlueprint", "LogPython", "LogActor"
+                     Examples:
+                     - "": All categories
+                     - "LogTemp": Only messages logged via UE_LOG(LogTemp, ...)
+                     - "LogBlueprint": Only Blueprint-related messages
+        
+        Returns:
+            Dict containing:
+            - logs: List of log entry dictionaries with:
+              - timestamp: When the message was logged
+              - category: Log category (LogTemp, LogBlueprint, etc.)
+              - severity: Message severity (Display, Warning, Error)
+              - message: The actual log message text
+            - count: Number of log entries returned
+            - max_lines: The maximum lines that were requested
+            - severity_filter: The severity filter that was applied
+            - category_filter: The category filter that was applied
+        
+        Examples:
+            # Get last 500 log messages (default)
+            >>> get_console_output()
+            
+            # Get last 1000 log messages
+            >>> get_console_output(max_lines=1000)
+            
+            # Get only error messages
+            >>> get_console_output(severity="Error")
+            
+            # Get only Blueprint-related warnings and errors
+            >>> get_console_output(category="LogBlueprint", severity="Warning")
+            
+            # Get recent LogTemp messages for debugging
+            >>> get_console_output(max_lines=100, category="LogTemp")
+        
+        Note:
+            This tool captures log messages from the editor's output log.
+            For real-time monitoring, consider calling this tool periodically.
+            The editor must be running for this tool to work.
+        """
+        from unreal_mcp_server import get_unreal_connection
+        
+        try:
+            unreal = get_unreal_connection()
+            if not unreal:
+                logger.warning("Failed to connect to Unreal Engine")
+                return {
+                    "success": False,
+                    "message": "Failed to connect to Unreal Engine",
+                    "logs": [],
+                    "count": 0
+                }
+            
+            params = {
+                "max_lines": max_lines,
+                "severity": severity,
+                "category": category
+            }
+            
+            logger.info(f"Getting console output with params: {params}")
+            response = unreal.send_command("get_console_output", params)
+            
+            if not response:
+                logger.error("No response from Unreal Engine")
+                return {
+                    "success": False,
+                    "message": "No response from Unreal Engine",
+                    "logs": [],
+                    "count": 0
+                }
+            
+            logger.info(f"Console output response: {response}")
+            
+            # Extract the result if it's nested
+            if "result" in response:
+                return response["result"]
+            
+            return response
+            
+        except Exception as e:
+            error_msg = f"Error getting console output: {e}"
+            logger.error(error_msg)
+            return {
+                "success": False,
+                "message": error_msg,
+                "logs": [],
+                "count": 0
+            }
+
     logger.info("Editor tools registered successfully")
+

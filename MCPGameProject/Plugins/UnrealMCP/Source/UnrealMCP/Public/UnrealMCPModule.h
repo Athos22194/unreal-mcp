@@ -3,6 +3,8 @@
 #include "CoreMinimal.h"
 #include "Modules/ModuleManager.h"
 
+class FMCPLogCaptureDevice;
+
 class FUnrealMCPModule : public IModuleInterface
 {
 public:
@@ -19,4 +21,11 @@ public:
 	{
 		return FModuleManager::Get().IsModuleLoaded("UnrealMCP");
 	}
+
+	/** Get the log capture device */
+	FMCPLogCaptureDevice* GetLogCaptureDevice() const { return LogCaptureDevice.Get(); }
+
+private:
+	/** Log capture device for console output */
+	TUniquePtr<FMCPLogCaptureDevice> LogCaptureDevice;
 }; 
