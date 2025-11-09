@@ -149,7 +149,3 @@ Simply place the configuration in the appropriate location for your MCP client.
 
 ## License
 MIT
-
-## Questions
-
-For questions, you can reach me on X/Twitter: [@chongdashu](https://www.x.com/chongdashu)
