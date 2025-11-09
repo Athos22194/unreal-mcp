@@ -136,6 +136,18 @@ TSharedPtr<FJsonObject> FUnrealMCPBlueprintIntrospection::HandleGetBlueprintData
     
     Result->SetArrayField(TEXT("event_graphs"), EventGraphsArray);
     
+    // Extract custom events (Phase 6)
+    TArray<TSharedPtr<FJsonValue>> CustomEventsArray = ExtractCustomEvents(Blueprint);
+    Result->SetArrayField(TEXT("custom_events"), CustomEventsArray);
+    
+    // Extract macros (Phase 7)
+    TArray<TSharedPtr<FJsonValue>> MacrosArray = ExtractMacros(Blueprint);
+    Result->SetArrayField(TEXT("macros"), MacrosArray);
+    
+    // Extract interfaces (Phase 7)
+    TArray<TSharedPtr<FJsonValue>> InterfacesArray = ExtractInterfaces(Blueprint);
+    Result->SetArrayField(TEXT("interfaces"), InterfacesArray);
+    
     UE_LOG(LogTemp, Display, TEXT("Successfully extracted blueprint data"));
     
     return Result;
@@ -831,4 +843,272 @@ TSharedPtr<FJsonObject> FUnrealMCPBlueprintIntrospection::ExtractGraphData(UEdGr
     GraphObj->SetNumberField(TEXT("connection_count"), ConnectionsArray.Num());
     
     return GraphObj;
+}
+
+// Phase 6: Extract custom events from event graphs
+TArray<TSharedPtr<FJsonValue>> FUnrealMCPBlueprintIntrospection::ExtractCustomEvents(UBlueprint* Blueprint)
+{
+    TArray<TSharedPtr<FJsonValue>> CustomEventsArray;
+    
+    if (!Blueprint)
+    {
+        return CustomEventsArray;
+    }
+    
+    UE_LOG(LogTemp, Display, TEXT("Extracting custom events from Blueprint: %s"), *Blueprint->GetName());
+    
+    // Check all event graphs for custom events
+    for (UEdGraph* Graph : Blueprint->UbergraphPages)
+    {
+        if (!Graph) continue;
+        
+        for (UEdGraphNode* Node : Graph->Nodes)
+        {
+            UK2Node_CustomEvent* CustomEvent = Cast<UK2Node_CustomEvent>(Node);
+            if (!CustomEvent) continue;
+            
+            TSharedPtr<FJsonObject> EventObj = MakeShared<FJsonObject>();
+            
+            // Event name
+            EventObj->SetStringField(TEXT("name"), CustomEvent->CustomFunctionName.ToString());
+            EventObj->SetStringField(TEXT("guid"), CustomEvent->NodeGuid.ToString());
+            
+            // Event metadata - using NodeComment for description
+            EventObj->SetStringField(TEXT("comment"), CustomEvent->NodeComment);
+            
+            // Replication settings - check function flags from the UFunction
+            UFunction* EventFunction = nullptr;
+            if (Blueprint->GeneratedClass)
+            {
+                EventFunction = Blueprint->GeneratedClass->FindFunctionByName(CustomEvent->CustomFunctionName);
+            }
+            
+            bool bIsReplicated = false;
+            FString ReplicationMode = TEXT("none");
+            
+            if (EventFunction)
+            {
+                if (EventFunction->HasAnyFunctionFlags(FUNC_Net))
+                {
+                    bIsReplicated = true;
+                    if (EventFunction->HasAnyFunctionFlags(FUNC_NetMulticast))
+                    {
+                        ReplicationMode = TEXT("multicast");
+                    }
+                    else if (EventFunction->HasAnyFunctionFlags(FUNC_NetServer))
+                    {
+                        ReplicationMode = TEXT("server");
+                    }
+                    else if (EventFunction->HasAnyFunctionFlags(FUNC_NetClient))
+                    {
+                        ReplicationMode = TEXT("client");
+                    }
+                    else
+                    {
+                        ReplicationMode = TEXT("replicated");
+                    }
+                }
+            }
+            
+            EventObj->SetBoolField(TEXT("is_replicated"), bIsReplicated);
+            EventObj->SetStringField(TEXT("replication_mode"), ReplicationMode);
+            
+            // Extract input parameters from output pins (excluding exec pin)
+            TArray<TSharedPtr<FJsonValue>> InputsArray;
+            for (UEdGraphPin* Pin : CustomEvent->Pins)
+            {
+                // Skip exec pins - we only want data pins
+                if (Pin->Direction == EGPD_Output && Pin->PinType.PinCategory != UEdGraphSchema_K2::PC_Exec)
+                {
+                    TSharedPtr<FJsonObject> ParamObj = MakeShared<FJsonObject>();
+                    ParamObj->SetStringField(TEXT("name"), Pin->PinName.ToString());
+                    
+                    // Type info
+                    TSharedPtr<FJsonObject> TypeInfo = MakeShared<FJsonObject>();
+                    TypeInfo->SetStringField(TEXT("category"), Pin->PinType.PinCategory.ToString());
+                    TypeInfo->SetStringField(TEXT("sub_category"), Pin->PinType.PinSubCategory.ToString());
+                    
+                    if (Pin->PinType.PinSubCategoryObject.IsValid())
+                    {
+                        TypeInfo->SetStringField(TEXT("object_type"), 
+                            Pin->PinType.PinSubCategoryObject->GetName());
+                    }
+                    
+                    TypeInfo->SetBoolField(TEXT("is_array"), Pin->PinType.IsArray());
+                    TypeInfo->SetBoolField(TEXT("is_reference"), Pin->PinType.bIsReference);
+                    TypeInfo->SetBoolField(TEXT("is_const"), Pin->PinType.bIsConst);
+                    
+                    ParamObj->SetObjectField(TEXT("type_info"), TypeInfo);
+                    
+                    // Default value (if any)
+                    if (!Pin->DefaultValue.IsEmpty())
+                    {
+                        ParamObj->SetStringField(TEXT("default_value"), Pin->DefaultValue);
+                    }
+                    
+                    InputsArray.Add(MakeShared<FJsonValueObject>(ParamObj));
+                }
+            }
+            EventObj->SetArrayField(TEXT("inputs"), InputsArray);
+            
+            CustomEventsArray.Add(MakeShared<FJsonValueObject>(EventObj));
+            
+            UE_LOG(LogTemp, Display, TEXT("  Found custom event: %s with %d inputs"), 
+                *CustomEvent->CustomFunctionName.ToString(), InputsArray.Num());
+        }
+    }
+    
+    UE_LOG(LogTemp, Display, TEXT("Total custom events found: %d"), CustomEventsArray.Num());
+    
+    return CustomEventsArray;
+}
+
+// Phase 7: Extract macro definitions
+TArray<TSharedPtr<FJsonValue>> FUnrealMCPBlueprintIntrospection::ExtractMacros(UBlueprint* Blueprint)
+{
+    TArray<TSharedPtr<FJsonValue>> MacrosArray;
+    
+    if (!Blueprint)
+    {
+        return MacrosArray;
+    }
+    
+    UE_LOG(LogTemp, Display, TEXT("Extracting macros from Blueprint: %s"), *Blueprint->GetName());
+    
+    // Macros are stored in MacroGraphs array
+    for (UEdGraph* Graph : Blueprint->MacroGraphs)
+    {
+        if (!Graph) continue;
+        
+        TSharedPtr<FJsonObject> MacroObj = MakeShared<FJsonObject>();
+        MacroObj->SetStringField(TEXT("name"), Graph->GetName());
+        
+        // Find tunnel nodes to extract inputs/outputs
+        TArray<TSharedPtr<FJsonValue>> InputsArray;
+        TArray<TSharedPtr<FJsonValue>> OutputsArray;
+        
+        for (UEdGraphNode* Node : Graph->Nodes)
+        {
+            if (!Node) continue;
+            
+            FString NodeClassName = Node->GetClass()->GetName();
+            
+            // Macro entry tunnel
+            if (NodeClassName.Contains(TEXT("Tunnel")) && NodeClassName.Contains(TEXT("Entry")))
+            {
+                // Output pins on entry node are macro inputs
+                for (UEdGraphPin* Pin : Node->Pins)
+                {
+                    if (Pin->Direction == EGPD_Output && Pin->PinType.PinCategory != UEdGraphSchema_K2::PC_Exec)
+                    {
+                        TSharedPtr<FJsonObject> ParamObj = MakeShared<FJsonObject>();
+                        ParamObj->SetStringField(TEXT("name"), Pin->PinName.ToString());
+                        ParamObj->SetStringField(TEXT("type"), Pin->PinType.PinCategory.ToString());
+                        
+                        if (Pin->PinType.PinSubCategoryObject.IsValid())
+                        {
+                            ParamObj->SetStringField(TEXT("sub_type"), 
+                                Pin->PinType.PinSubCategoryObject->GetName());
+                        }
+                        
+                        InputsArray.Add(MakeShared<FJsonValueObject>(ParamObj));
+                    }
+                }
+            }
+            // Macro exit tunnel
+            else if (NodeClassName.Contains(TEXT("Tunnel")) && NodeClassName.Contains(TEXT("Result")))
+            {
+                // Input pins on result node are macro outputs
+                for (UEdGraphPin* Pin : Node->Pins)
+                {
+                    if (Pin->Direction == EGPD_Input && Pin->PinType.PinCategory != UEdGraphSchema_K2::PC_Exec)
+                    {
+                        TSharedPtr<FJsonObject> ParamObj = MakeShared<FJsonObject>();
+                        ParamObj->SetStringField(TEXT("name"), Pin->PinName.ToString());
+                        ParamObj->SetStringField(TEXT("type"), Pin->PinType.PinCategory.ToString());
+                        
+                        if (Pin->PinType.PinSubCategoryObject.IsValid())
+                        {
+                            ParamObj->SetStringField(TEXT("sub_type"), 
+                                Pin->PinType.PinSubCategoryObject->GetName());
+                        }
+                        
+                        OutputsArray.Add(MakeShared<FJsonValueObject>(ParamObj));
+                    }
+                }
+            }
+        }
+        
+        MacroObj->SetArrayField(TEXT("inputs"), InputsArray);
+        MacroObj->SetArrayField(TEXT("outputs"), OutputsArray);
+        
+        // Extract category and description from graph metadata
+        MacroObj->SetStringField(TEXT("category"), TEXT(""));  // TODO: Find where this is stored
+        MacroObj->SetStringField(TEXT("description"), TEXT(""));  // TODO: Find where this is stored
+        
+        // Extract full graph structure
+        TSharedPtr<FJsonObject> GraphData = ExtractGraphData(Graph);
+        if (GraphData.IsValid())
+        {
+            MacroObj->SetObjectField(TEXT("graph"), GraphData);
+        }
+        
+        MacrosArray.Add(MakeShared<FJsonValueObject>(MacroObj));
+        
+        UE_LOG(LogTemp, Display, TEXT("  Found macro: %s with %d inputs, %d outputs"), 
+            *Graph->GetName(), InputsArray.Num(), OutputsArray.Num());
+    }
+    
+    UE_LOG(LogTemp, Display, TEXT("Total macros found: %d"), MacrosArray.Num());
+    
+    return MacrosArray;
+}
+
+// Phase 7: Extract implemented interfaces
+TArray<TSharedPtr<FJsonValue>> FUnrealMCPBlueprintIntrospection::ExtractInterfaces(UBlueprint* Blueprint)
+{
+    TArray<TSharedPtr<FJsonValue>> InterfacesArray;
+    
+    if (!Blueprint)
+    {
+        return InterfacesArray;
+    }
+    
+    UE_LOG(LogTemp, Display, TEXT("Extracting interfaces from Blueprint: %s"), *Blueprint->GetName());
+    
+    // Extract implemented interfaces
+    for (const FBPInterfaceDescription& InterfaceDesc : Blueprint->ImplementedInterfaces)
+    {
+        if (!InterfaceDesc.Interface)
+        {
+            continue;
+        }
+        
+        TSharedPtr<FJsonObject> InterfaceObj = MakeShared<FJsonObject>();
+        InterfaceObj->SetStringField(TEXT("name"), InterfaceDesc.Interface->GetName());
+        InterfaceObj->SetStringField(TEXT("path"), InterfaceDesc.Interface->GetPathName());
+        
+        // Extract interface graphs (functions that implement the interface)
+        TArray<TSharedPtr<FJsonValue>> GraphsArray;
+        for (const UEdGraph* Graph : InterfaceDesc.Graphs)
+        {
+            if (!Graph) continue;
+            
+            TSharedPtr<FJsonObject> GraphObj = MakeShared<FJsonObject>();
+            GraphObj->SetStringField(TEXT("name"), Graph->GetName());
+            GraphObj->SetNumberField(TEXT("node_count"), Graph->Nodes.Num());
+            
+            GraphsArray.Add(MakeShared<FJsonValueObject>(GraphObj));
+        }
+        InterfaceObj->SetArrayField(TEXT("implemented_functions"), GraphsArray);
+        
+        InterfacesArray.Add(MakeShared<FJsonValueObject>(InterfaceObj));
+        
+        UE_LOG(LogTemp, Display, TEXT("  Found interface: %s with %d functions"), 
+            *InterfaceDesc.Interface->GetName(), GraphsArray.Num());
+    }
+    
+    UE_LOG(LogTemp, Display, TEXT("Total interfaces found: %d"), InterfacesArray.Num());
+    
+    return InterfacesArray;
 }

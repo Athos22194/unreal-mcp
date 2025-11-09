@@ -20,6 +20,7 @@
 #include "Components/StaticMeshComponent.h"
 #include "EditorSubsystem.h"
 #include "Subsystems/EditorActorSubsystem.h"
+#include "Subsystems/AssetEditorSubsystem.h"
 #include "Engine/Blueprint.h"
 #include "Engine/BlueprintGeneratedClass.h"
 
@@ -80,6 +81,11 @@ TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleCommand(const FString& C
     else if (CommandType == TEXT("get_console_output"))
     {
         return HandleGetConsoleOutput(Params);
+    }
+    // Asset editor commands
+    else if (CommandType == TEXT("get_opened_assets"))
+    {
+        return HandleGetOpenedAssets(Params);
     }
     
     return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Unknown editor command: %s"), *CommandType));
@@ -686,3 +692,66 @@ TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleGetConsoleOutput(const T
 
 }
 
+TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleGetOpenedAssets(const TSharedPtr<FJsonObject>& Params)
+{
+    TArray<TSharedPtr<FJsonValue>> AssetsArray;
+    
+    // Get the asset editor subsystem
+    if (GEditor)
+    {
+        // Get all open asset editors
+        UAssetEditorSubsystem* AssetEditorSubsystem = GEditor->GetEditorSubsystem<UAssetEditorSubsystem>();
+        if (AssetEditorSubsystem)
+        {
+            TArray<UObject*> EditedAssets = AssetEditorSubsystem->GetAllEditedAssets();
+            
+            for (UObject* Asset : EditedAssets)
+            {
+                if (Asset)
+                {
+                    TSharedPtr<FJsonObject> AssetObj = MakeShared<FJsonObject>();
+                    
+                    // Get asset name
+                    AssetObj->SetStringField(TEXT("name"), Asset->GetName());
+                    
+                    // Get full path
+                    FString PackagePath = Asset->GetPathName();
+                    AssetObj->SetStringField(TEXT("path"), PackagePath);
+                    
+                    // Get asset class
+                    AssetObj->SetStringField(TEXT("class"), Asset->GetClass()->GetName());
+                    
+                    // Get package name
+                    if (Asset->GetPackage())
+                    {
+                        AssetObj->SetStringField(TEXT("package"), Asset->GetPackage()->GetName());
+                    }
+                    
+                    // Check if it's a Blueprint
+                    UBlueprint* Blueprint = Cast<UBlueprint>(Asset);
+                    if (Blueprint)
+                    {
+                        AssetObj->SetBoolField(TEXT("is_blueprint"), true);
+                        if (Blueprint->ParentClass)
+                        {
+                            AssetObj->SetStringField(TEXT("parent_class"), Blueprint->ParentClass->GetName());
+                        }
+                    }
+                    else
+                    {
+                        AssetObj->SetBoolField(TEXT("is_blueprint"), false);
+                    }
+                    
+                    AssetsArray.Add(MakeShared<FJsonValueObject>(AssetObj));
+                }
+            }
+        }
+    }
+    
+    TSharedPtr<FJsonObject> ResultObj = MakeShared<FJsonObject>();
+    ResultObj->SetBoolField(TEXT("success"), true);
+    ResultObj->SetArrayField(TEXT("assets"), AssetsArray);
+    ResultObj->SetNumberField(TEXT("count"), AssetsArray.Num());
+    
+    return ResultObj;
+}

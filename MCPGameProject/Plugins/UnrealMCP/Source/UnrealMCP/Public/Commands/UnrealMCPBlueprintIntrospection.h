@@ -48,4 +48,19 @@ private:
      * Extract graph node and connection data (Phase 5)
      */
     TSharedPtr<FJsonObject> ExtractGraphData(class UEdGraph* Graph);
+    
+    /**
+     * Extract custom events from event graphs (Phase 6)
+     */
+    TArray<TSharedPtr<FJsonValue>> ExtractCustomEvents(class UBlueprint* Blueprint);
+    
+    /**
+     * Extract macro definitions (Phase 7)
+     */
+    TArray<TSharedPtr<FJsonValue>> ExtractMacros(class UBlueprint* Blueprint);
+    
+    /**
+     * Extract implemented interfaces (Phase 7)
+     */
+    TArray<TSharedPtr<FJsonValue>> ExtractInterfaces(class UBlueprint* Blueprint);
 };

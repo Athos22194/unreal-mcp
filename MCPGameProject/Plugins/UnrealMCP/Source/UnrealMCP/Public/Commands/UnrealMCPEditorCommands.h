@@ -32,4 +32,7 @@ private:
     TSharedPtr<FJsonObject> HandleFocusViewport(const TSharedPtr<FJsonObject>& Params);
     TSharedPtr<FJsonObject> HandleTakeScreenshot(const TSharedPtr<FJsonObject>& Params);
     TSharedPtr<FJsonObject> HandleGetConsoleOutput(const TSharedPtr<FJsonObject>& Params);
+    
+    // Editor asset commands
+    TSharedPtr<FJsonObject> HandleGetOpenedAssets(const TSharedPtr<FJsonObject>& Params);
 }; 

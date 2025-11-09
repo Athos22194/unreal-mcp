@@ -524,5 +524,55 @@ def register_editor_tools(mcp: FastMCP):
                 "count": 0
             }
 
+    @mcp.tool()
+    def get_opened_assets(ctx: Context) -> Dict[str, Any]:
+        """
+        Get currently opened assets in the Unreal Editor.
+        
+        This tool retrieves all assets that are currently open in editor tabs,
+        including Blueprints, materials, textures, and other asset types.
+        Useful for discovering asset paths and identifying what's being worked on.
+        
+        Returns:
+            Dict containing:
+            - success (bool): Whether the operation succeeded
+            - assets (list): Array of opened asset information:
+              - name (str): Asset name
+              - path (str): Full asset path
+              - class (str): Asset class type
+              - package (str): Package name
+              - is_blueprint (bool): Whether it's a Blueprint
+              - parent_class (str): Parent class (if Blueprint)
+            - count (int): Number of opened assets
+        
+        Examples:
+            >>> result = get_opened_assets()
+            >>> if result["success"]:
+            ...     for asset in result["assets"]:
+            ...         print(f"{asset['name']}: {asset['path']}")
+        """
+        from unreal_mcp_server import get_unreal_connection
+        
+        try:
+            unreal = get_unreal_connection()
+            if not unreal:
+                logger.error("Failed to connect to Unreal Engine")
+                return {"success": False, "error": "Failed to connect to Unreal Engine", "assets": [], "count": 0}
+            
+            logger.info("Getting opened assets from editor")
+            response = unreal.send_command("get_opened_assets", {})
+            
+            if not response:
+                logger.error("No response from Unreal Engine")
+                return {"success": False, "error": "No response from Unreal Engine", "assets": [], "count": 0}
+            
+            logger.info(f"Opened assets response: {response}")
+            return response
+            
+        except Exception as e:
+            error_msg = f"Error getting opened assets: {e}"
+            logger.error(error_msg)
+            return {"success": False, "error": error_msg, "assets": [], "count": 0}
+
     logger.info("Editor tools registered successfully")
 
